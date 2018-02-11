@@ -94,11 +94,14 @@ test-suite debug-test
         Hoed
     build-depends:
         base == 4.*,
+        Diff,
         directory,
         extra,
         aeson,
         bytestring,
         containers,
         filepath,
+        prettyprinter,
+        prettyprinter-ansi-terminal,
         text,
         debug

@@ -17,6 +17,7 @@ import Debug.DebugTrace
 import Control.Monad
 import Data.Aeson
 import qualified Data.ByteString.Lazy as B
+import Data.Text.Lazy as T (unpack)
 import Util
 
 #if __GLASGOW_HASKELL__ >= 820
@@ -62,6 +63,7 @@ main = do
 #else
     Just refTrace <- decode <$> B.readFile "test/ref/hoed80.json"
 #endif
-    unless (equivalentTrace trace refTrace) $
-      error "Trace does not match the reference value"
+    let d = diffTrace trace refTrace
+    unless (isEqualDiffTrace d) $
+      fail $ "Trace does not match the reference value:\n\n" ++ T.unpack(pprTraceDiff d)
     print (foo ['c'])
