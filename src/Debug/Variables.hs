@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE MagicHash         #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -398,3 +400,13 @@ ptrEqual a b = unsafePerformIO $ do
     a <- evaluate a
     b <- evaluate b
     return $ isTrue# (reallyUnsafePtrEquality# a b)
+
+
+#if __GLASGOW_HASKELL__ >= 800
+-- On older GHC's this level of overlap leads to a compile error
+
+-- | An orphan instance of 'Show' that maps anything without a 'Show' instance
+--   to @?@. Suitable for use only when debugging.
+instance {-# OVERLAPS #-} Show a where
+    show _ = "?"
+#endif

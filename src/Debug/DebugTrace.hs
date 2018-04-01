@@ -1,10 +1,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-} -- Dodgy Show instance, useful for debugging
 {-# OPTIONS_GHC -Wno-deprecations #-} -- Dodgy Show instance, useful for debugging
 
@@ -144,15 +142,6 @@ debugViewTrace db = do
         putStrLn $
             "Failed to start a web browser, open: " ++ file ++ "\n" ++
             "In future you may wish to use 'debugSaveTrace."
-
-#if __GLASGOW_HASKELL__ >= 800
--- On older GHC's this level of overlap leads to a compile error
-
--- | An orphan instance of 'Show' that maps anything without a 'Show' instance
---   to @?@. Suitable for use only when debugging.
-instance {-# OVERLAPS #-} Show a where
-    show _ = "?"
-#endif
 
 ---------------------------------
 -- Json output
