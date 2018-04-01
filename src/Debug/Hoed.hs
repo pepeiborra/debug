@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE CPP               #-}
 {-# LANGUAGE BangPatterns      #-}
@@ -73,13 +75,16 @@ module Debug.Hoed
   ) where
 
 import           Control.Monad
+import           Control.Monad.Intern
 import           Data.Bifunctor
+import           Data.Bitraversable
 import           Data.Char
 import           Data.Generics.Uniplate.Data
 import           Data.Graph.Libgraph
 import           Data.Hashable
 import           Data.HashMap.Strict         (HashMap)
 import qualified Data.HashMap.Strict         as HMS
+import qualified Data.IntMap.Strict          as IntMap
 import qualified Data.Map.Strict             as Map
 import qualified Data.HashSet                as Set
 import           Data.List
@@ -88,7 +93,7 @@ import           Data.Monoid
 import           Data.Text                   (Text, pack)
 import qualified Data.Text                   as T
 import "Hoed"    Debug.Hoed
-import           Debug.Hoed.Render           as Hoed
+import           Debug.Hoed.Render           as Hoed -- (Exp, ExpF, pattern ExpFun, pattern ExpCon)
 import           Debug.Util
 import           Debug.DebugTrace            as D (CallData (..),
                                                    DebugTrace (..),
@@ -153,17 +158,18 @@ data HoedCallDetails = HoedCallDetails
 ---------------------------------------------------------------------------
 -- Cached pred and succ relationships
 
-data AnnotatedCompTree = AnnotatedCompTree
-  { compTree           :: CompTree
-  , predsMap, succsMap:: HMS.HashMap Vertex [Vertex]
+data AnnotatedCompTree exp = AnnotatedCompTree
+  { compTree          :: CompTreeOf exp
+  , predsMap, succsMap:: HMS.HashMap (VertexOf exp) [VertexOf exp]
   }
-getPreds :: AnnotatedCompTree -> Vertex -> [Vertex]
+
+getPreds :: (Eq exp, Hashable exp) => AnnotatedCompTree exp -> VertexOf exp -> [VertexOf exp]
 getPreds act v = fromMaybe [] $ HMS.lookup v (predsMap act)
 
-getSuccs :: AnnotatedCompTree -> Vertex -> [Vertex]
+getSuccs :: (Eq exp, Hashable exp) => AnnotatedCompTree exp -> VertexOf exp -> [VertexOf exp]
 getSuccs act v =  fromMaybe [] $ HMS.lookup v (succsMap act)
 
-annotateCompTree :: CompTree -> AnnotatedCompTree
+annotateCompTree :: (Eq exp, Hashable exp) => CompTreeOf exp -> AnnotatedCompTree exp
 annotateCompTree compTree = AnnotatedCompTree{..}  where
   predsMap  = HMS.fromListWith (++) [ (t, [s]) | Arc s t _ <- arcs compTree]
   succsMap  = HMS.fromListWith (++) [ (s, [t]) | Arc s t _ <- arcs compTree]
@@ -172,43 +178,50 @@ annotateCompTree compTree = AnnotatedCompTree{..}  where
 hoedCallValues :: HoedCallDetails -> [Hashed Text]
 hoedCallValues HoedCallDetails{..} = result : (argValues ++ clauseValues)
 
-getRelatives :: (Vertex -> [Vertex]) -> Vertex -> [Int]
-getRelatives rel v =
+getRelatives :: (exp -> ExpF a) -> (VertexOf exp -> [VertexOf exp]) -> VertexOf exp -> [Int]
+getRelatives view rel v =
       [ stmtIdentifier
-        | v'@Vertex {vertexStmt = CompStmt {stmtIdentifier, stmtExp = ExpFun {}}} <- rel v
+        | Vertex{vertexStmt = CompStmt {stmtIdentifier, stmtExp = view -> ExpFun_{}}} <- rel v
       ] ++
       [ callKey
-        | v'@Vertex {vertexStmt = CompStmt {stmtExp = ExpCon {}}} <- rel v
-        , callKey <- getRelatives rel v'
+        | v'@Vertex{vertexStmt = CompStmt {stmtExp = view -> ExpCon_{}}} <- rel v
+        , callKey <- getRelatives view rel v'
       ]
 
-extractHoedCall :: (Hoed.Exp -> Hashed Text) -> AnnotatedCompTree -> Vertex -> Maybe (Hashed HoedFunctionKey, HoedCallKey, HoedCallDetails)
-extractHoedCall render hoedCompTree v@Vertex {vertexStmt = c@CompStmt {stmtExp = ExpFun {calls = [(args,res)]}, ..}} =
+extractHoedCall
+  :: (Id -> Hashed Text)
+  -> AnnotatedCompTree (Interned ExpF, Id)
+  -> VertexOf (Interned ExpF, Id)
+  -> Maybe (Hashed HoedFunctionKey, HoedCallKey, HoedCallDetails)
+extractHoedCall render hoedCompTree v@Vertex {vertexStmt = c@CompStmt {stmtExp = fst -> ExpFun_{calls_ = [(args,res)]}, ..}} =
   Just
     ( hashed $ HoedFunctionKey (hashed stmtLabel) (length args) (map fst clauses)
     , stmtIdentifier
     , HoedCallDetails (map render args) (map snd clauses) (render res) depends parents)
   where
     clauses =
-      [ (hashed stmtLabel, render it)
-      | Vertex {vertexStmt = CompStmt {stmtLabel, stmtExp = it@ExpCon{}}} <-
+      [ (hashed stmtLabel, render id)
+      | Vertex {vertexStmt = CompStmt {stmtLabel, stmtExp = (ExpCon_{}, id)}} <-
           getSuccs hoedCompTree v
       ]
-    depends = snub $ getRelatives (getSuccs hoedCompTree) v
-    parents = snub $ getRelatives (getPreds hoedCompTree) v
+    depends = snub $ getRelatives fst (getSuccs hoedCompTree) v
+    parents = snub $ getRelatives fst (getPreds hoedCompTree) v
 
 extractHoedCall _ _ _ = Nothing
 
 -- | Convert a 'Hoed' trace to a 'debug' trace
-convert :: CompTree -> HashMap Hoed.Exp Hoed.Exp -> DebugTrace
-convert hoedCompTree hoedExps = DebugTrace {..}
+convert :: InternedCompTree -> InternMaps ExpF -> DebugTrace
+convert hoedCompTree hoedInternMaps = DebugTrace {..}
   where
+    (hoedCompTree', hoedInternMaps') =
+      runInternST (bitraverse ((traverse.traverse) (\exp ->(exp,) <$> internShallow exp)) pure hoedCompTree) hoedInternMaps
+
     hoedFunctionCalls :: HashMap (Hashed HoedFunctionKey) [(HoedCallKey, HoedCallDetails)]
     hoedFunctionCalls =
       HMS.fromListWith (<>)
         [ (fnKey, [(callKey, callDetails)])
         | Just (fnKey, callKey, callDetails) <-
-            map (extractHoedCall lookupRenderedExp (annotateCompTree hoedCompTree)) (vertices hoedCompTree)
+            map (extractHoedCall lookupRenderedExp (annotateCompTree hoedCompTree')) (vertices hoedCompTree')
         ]
     sortedFunctionCalls =
       sortOn (\(unhashed -> x, _) -> (label x, arity x)) $ toList hoedFunctionCalls
@@ -221,7 +234,11 @@ convert hoedCompTree hoedExps = DebugTrace {..}
 
     variables = map unhashed variablesHashed
 
-    lookupRenderedExp = fromMaybe (error "bug in Hoed: incomplete hoedExps") . (`HMS.lookup` fmap (hashed . pack . show) hoedExps)
+    -- renderedMap :: IntMap Int String
+    renderedMap = fmap (show . fmap (Verbatim . fromJust . flip IntMap.lookup renderedMap)) (inflateMap hoedInternMaps')
+
+    lookupRenderedExp = fromMaybe (error "bug in Hoed: incomplete hoedExps")
+                      . (`IntMap.lookup` fmap (hashed . pack) renderedMap)
 
     lookupFunctionIndex =
       fromMaybe (error "bug in convert: lookupFunctionIndex") .
@@ -426,3 +443,9 @@ adjustPat x        = x
 
 toLit :: Name -> TH.Exp
 toLit (Name (OccName x) _) = LitE $ StringL x
+
+-------------------------------------------------------------------------------------------
+--
+
+newtype Verbatim = Verbatim String
+instance Show Verbatim where showsPrec p (Verbatim s) = showParen (p>0) $ showString s
