@@ -128,9 +128,12 @@ getDebugTrace hoedOptions program = do
   putStrLn "Please wait while the debug trace is constructed..."
   t <- getTime Monotonic
   let result = convert hoedCompTree hoedExps
-      !_     = length(variables result)
+      !lv    = length(variables result)
   t' <- getTime Monotonic
   let compTime :: Double = fromIntegral(toNanoSecs(diffTimeSpec t t')) * 1e-9
+  putStrLn $ show (length $ functions result) ++ " functions"
+  putStrLn $ show lv ++ " variables"
+  putStrLn $ show (length $ D.calls result) ++ " calls"
   putStrLn $ "=== Debug Trace (" ++ show compTime ++ " seconds) ==="
   return result
 
