@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -85,6 +86,7 @@ import           Data.Hashable
 import           Data.HashMap.Strict         (HashMap)
 import qualified Data.HashMap.Strict         as HMS
 import qualified Data.IntMap.Strict          as IntMap
+import qualified Data.IntSet                 as IntSet
 import qualified Data.Map.Strict             as Map
 import qualified Data.HashSet                as Set
 import           Data.List
@@ -148,9 +150,9 @@ instance Hashable HoedFunctionKey where
 type HoedCallKey = Int
 
 data HoedCallDetails = HoedCallDetails
-  { argValues
-  , clauseValues :: ![Hashed Text]
-  , result :: !(Hashed Text)
+  { argValuesIdx
+  , clauseValuesIdx :: [Id]
+  , resultIdx :: Id
   , depends, parents :: ![HoedCallKey]
   } deriving (Eq, Generic)
 
@@ -175,8 +177,8 @@ annotateCompTree compTree = AnnotatedCompTree{..}  where
   succsMap  = HMS.fromListWith (++) [ (s, [t]) | Arc s t _ <- arcs compTree]
 
 ---------------------------------------------------------------------------
-hoedCallValues :: HoedCallDetails -> [Hashed Text]
-hoedCallValues HoedCallDetails{..} = result : (argValues ++ clauseValues)
+hoedCallValues :: HoedCallDetails -> [Id]
+hoedCallValues HoedCallDetails{..} = resultIdx : (argValuesIdx ++ clauseValuesIdx)
 
 getRelatives :: (exp -> ExpF a) -> (VertexOf exp -> [VertexOf exp]) -> VertexOf exp -> [Int]
 getRelatives view rel v =
@@ -189,68 +191,65 @@ getRelatives view rel v =
       ]
 
 extractHoedCall
-  :: (Id -> Hashed Text)
-  -> AnnotatedCompTree (Interned ExpF, Id)
+  :: AnnotatedCompTree (Interned ExpF, Id)
   -> VertexOf (Interned ExpF, Id)
   -> Maybe (Hashed HoedFunctionKey, HoedCallKey, HoedCallDetails)
-extractHoedCall render hoedCompTree v@Vertex {vertexStmt = c@CompStmt {stmtExp = fst -> ExpFun_{calls_ = [(args,res)]}, ..}} =
+extractHoedCall hoedCompTree v@Vertex {vertexStmt = c@CompStmt {stmtExp = fst -> ExpFun_{calls_ = [(args,res)]}, ..}} =
   Just
     ( hashed $ HoedFunctionKey (hashed stmtLabel) (length args) (map fst clauses)
     , stmtIdentifier
-    , HoedCallDetails (map render args) (map snd clauses) (render res) depends parents)
+    , HoedCallDetails args (map snd clauses) res depends parents)
   where
     clauses =
-      [ (hashed stmtLabel, render id)
+      [ (hashed stmtLabel, id)
       | Vertex {vertexStmt = CompStmt {stmtLabel, stmtExp = (ExpCon_{}, id)}} <-
           getSuccs hoedCompTree v
       ]
     depends = snub $ getRelatives fst (getSuccs hoedCompTree) v
     parents = snub $ getRelatives fst (getPreds hoedCompTree) v
 
-extractHoedCall _ _ _ = Nothing
+extractHoedCall _ _ = Nothing
 
 -- | Convert a 'Hoed' trace to a 'debug' trace
 convert :: InternedCompTree -> InternMaps ExpF -> DebugTrace
 convert hoedCompTree hoedInternMaps = DebugTrace {..}
   where
+    -- Ensure top level Exps are present in the intern map
     (hoedCompTree', hoedInternMaps') =
       runInternST (bitraverse ((traverse.traverse) (\exp ->(exp,) <$> internShallow exp)) pure hoedCompTree) hoedInternMaps
 
+    -- Query for all function calls and associated details
     hoedFunctionCalls :: HashMap (Hashed HoedFunctionKey) [(HoedCallKey, HoedCallDetails)]
     hoedFunctionCalls =
       HMS.fromListWith (<>)
         [ (fnKey, [(callKey, callDetails)])
         | Just (fnKey, callKey, callDetails) <-
-            map (extractHoedCall lookupRenderedExp (annotateCompTree hoedCompTree')) (vertices hoedCompTree')
+            map (extractHoedCall (annotateCompTree hoedCompTree')) (vertices hoedCompTree')
         ]
+
     sortedFunctionCalls =
       sortOn (\(unhashed -> x, _) -> (label x, arity x)) $ toList hoedFunctionCalls
 
-    variablesHashed :: [Hashed Text]
-    variablesHashed =
-      Set.toList $
-      Set.fromList $
-      foldMap (foldMap (hoedCallValues . snd)) hoedFunctionCalls
+    -- Hoed indexes of all top level expressions
+    variableIndexes = foldMap (foldMap (IntSet.fromList . hoedCallValues . snd)) hoedFunctionCalls
 
-    variables = map unhashed variablesHashed
+    -- Mapping from Hoed exp indexes to Debug variable indexes
+    reindex = flip (IntMap.findWithDefault (error "reindex")) (IntMap.fromList $ zip (IntSet.toList variableIndexes) [0..])
 
-    -- renderedMap :: IntMap Int String
-    renderedMap = fmap (show . fmap (Verbatim . fromJust . flip IntMap.lookup renderedMap)) (inflateMap hoedInternMaps')
+    -- Debug variables
+    variables :: [Text]
+    variables = lookupRenderedExp <$> IntSet.toList variableIndexes
 
-    lookupRenderedExp = fromMaybe (error "bug in Hoed: incomplete hoedExps")
-                      . (`IntMap.lookup` fmap (hashed . pack) renderedMap)
+    -- Mapping from Hoed exp indexes to Text
+    lookupRenderedExp =
+      let renderedMap = fmap (show . fmap (Verbatim . flip (IntMap.findWithDefault "??") renderedMap)) (inflateMap hoedInternMaps')
+      in flip (IntMap.findWithDefault (error "bug in Hoed: incomplete hoedExps")) (fmap pack renderedMap)
+    -- lookupRenderedExp x = hashed $ pack $ show @Hoed.Exp $ evalIntern (inflate x) hoedInternMaps'
 
-    lookupFunctionIndex =
-      fromMaybe (error "bug in convert: lookupFunctionIndex") .
-      (`HMS.lookup` HMS.fromList (zip (map fst sortedFunctionCalls) [0 ..]))
-
-    lookupVariableIndex =
-      fromMaybe (error "bug in convert: lookupVariableIndex") .
-      (`HMS.lookup` HMS.fromList (zip variablesHashed [0 ..]))
-
-    lookupCallIndex =
-      fromMaybe (error "bug in convert: lookupCallIndex") .
-      (`HMS.lookup` HMS.fromList (zip (map fst callsTable) [0 ..]))
+    -- Mapping to Debug function indexes
+    lookupFunctionIndex = flip (HMS.lookupDefault (error "bug in convert: lookupFunctionIndex")) (HMS.fromList (zip (map fst sortedFunctionCalls) [0 ..]))
+    -- Mapping from Hoed Comp uniques to debug call indexes
+    lookupCallIndex     = flip (IntMap.findWithDefault (error "bug in convert: lookupCallIndex")) (IntMap.fromList (zip (map fst callsTable) [0 ..]))
 
     (functions, concat -> callsTable) =
       unzip
@@ -258,10 +257,10 @@ convert hoedCompTree hoedInternMaps = DebugTrace {..}
         ,[( callId, CallData {..})
          | (callId, HoedCallDetails {..}) <- toList calls
          , let callVals =
-                 map (second lookupVariableIndex) $
-                 ("$result", result) :
-                 zipWith (\i v -> ("$arg" <> pack (show i), v)) [(1::Int) ..] argValues ++
-                 zip (map unhashed clauses) clauseValues
+                 map (second reindex) $
+                 ("$result", resultIdx) :
+                 zipWith (\i v -> ("$arg" <> pack (show i), v)) [(1::Int) ..] argValuesIdx ++
+                 zip (map unhashed clauses) clauseValuesIdx
          , let callDepends = map lookupCallIndex depends
          , let callParents = map lookupCallIndex parents
          ])
