@@ -94,6 +94,7 @@ import           Data.Maybe
 import           Data.Monoid
 import           Data.Text                   (Text, pack)
 import qualified Data.Text                   as T
+import qualified Data.Text.Lazy              as LT
 import "Hoed"    Debug.Hoed
 import           Debug.Hoed.Render           as Hoed -- (Exp, ExpF, pattern ExpFun, pattern ExpCon)
 import           Debug.Util
@@ -245,8 +246,8 @@ convert hoedCompTree hoedInternMaps = DebugTrace {..}
 
     -- Mapping from Hoed exp indexes to Text
     lookupRenderedExp =
-      let renderedMap = fmap (show . fmap (Verbatim . flip (IntMap.findWithDefault "??") renderedMap)) (inflateMap hoedInternMaps')
-      in flip (IntMap.findWithDefault (error "bug in Hoed: incomplete hoedExps")) (fmap pack renderedMap)
+      let renderedMap = fmap (renderExp . fmap (flip (IntMap.findWithDefault "??") renderedMap)) (inflateMap hoedInternMaps')
+      in flip (IntMap.findWithDefault (error "bug in Hoed: incomplete hoedExps")) (fmap LT.toStrict renderedMap)
     -- lookupRenderedExp x = hashed $ pack $ show @Hoed.Exp $ evalIntern (inflate x) hoedInternMaps'
 
     -- Mapping to Debug function indexes
