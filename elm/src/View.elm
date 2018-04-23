@@ -1,4 +1,4 @@
-module View exposing(processCall, view)
+module View exposing (processCall, view)
 
 import Array exposing (..)
 import Dict
@@ -143,6 +143,7 @@ viewCallList model trace =
     div [] <|
         [ functionNameSelector
         , nameFilterInput
+
         {- , callsPerPageSelector -}
         , prevButton
         , numButtons
@@ -240,42 +241,48 @@ viewSource trace call =
 
 
 renderSource : (String -> Maybe String) -> String -> List (Html msg)
+
+
+
+--renderSource _ src = [text src]
+
+
 renderSource getArg =
     let
-        loop src =
+        loop acc src =
             case find (AtMost 1) hsLexer src of
                 [] ->
-                    []
+                    acc
 
                 { match } :: _ ->
                     case match of
                         "" ->
-                            []
+                            acc
 
                         "where" ->
-                            span [ class "hs-keyword" ] [ text "where" ]
-                                :: loop (String.dropLeft 5 src)
+                            loop (span [ class "hs-keyword" ] [ text "where" ] :: acc) (String.dropLeft 5 src)
 
                         "=" ->
-                            span [ class "hs-equals" ] [ text "=" ]
-                                :: loop (String.dropLeft 1 src)
+                            loop (span [ class "hs-equals" ] [ text "=" ] :: acc) (String.dropLeft 1 src)
 
                         _ ->
-                            (case String.indexes match symbols of
-                                _ :: _ ->
-                                    span [ class "hs-keyglyph" ] [ text match ]
+                            let
+                                it =
+                                    case String.indexes match symbols of
+                                        _ :: _ ->
+                                            span [ class "hs-keyglyph" ] [ text match ]
 
-                                [] ->
-                                    case getArg match of
-                                        Just arg ->
-                                            abbr [ title arg ] [ text match ]
+                                        [] ->
+                                            case getArg match of
+                                                Just arg ->
+                                                    abbr [ title arg ] [ text match ]
 
-                                        Nothing ->
-                                            text match
-                            )
-                                :: loop (String.dropLeft (String.length match) src)
+                                                Nothing ->
+                                                    text match
+                            in
+                            loop (it :: acc) (String.dropLeft (String.length match) src)
     in
-    loop
+    loop [] >> List.reverse
 
 
 getArg :
