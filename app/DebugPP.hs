@@ -101,7 +101,7 @@ main = do
   hOut <- maybe (return stdout) (`openFile` WriteMode) out
   contents <- hGetContents hIn
   config@Config{..} <- readConfig
-  hPutStr hOut $ instrument config contents
+  hPutStr hOut $ instrument orig config contents
   unless (hOut == stdout) $ hClose hOut
   when verbose $
     putStrLn $ "[debug-pp] Instrumented " ++ orig

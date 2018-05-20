@@ -57,12 +57,13 @@ pattern Config { excluded
 defaultConfig :: Config
 defaultConfig = Config_ Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
-instrument :: Config -> String -> String
-instrument Config {..} contents
-  | name `elem` excluded = contents
+instrument :: String -> Config -> String -> String
+instrument filename Config {..} contents
+  | name `elem` excluded =
+    printf "{-# LINE 0 %s #-}\n" (show filename) ++ contents
   | otherwise = unlines [top', modules', body'']
   where
-    (top, name, modules, body) = parseModule contents
+    (top, name, modules, body, bodyStartLine) = parseModule contents
     debugModule = "Debug" ++ if useHoedBackend then ".Hoed" else ""
     modules' = unlines $ modules ++
       ["import qualified " ++ debugModule ++ " as Debug"] ++
@@ -97,7 +98,10 @@ instrument Config {..} contents
           (show excludedFromInstanceGeneration)
       | otherwise =
         "Debug.debug"
-    body'' = unlines $ (debugWrapper ++ " [d|") : map indent (body' ++ ["  |]"])
+    body'' = unlines $
+      printf "{-# LINE %d %s #-}" bodyStartLine (show filename) :
+      (debugWrapper ++ " [d|") :
+      map indent (body' ++ ["  |]"])
 
 instrumentMainFunction :: String -> String
 instrumentMainFunction l
@@ -106,8 +110,8 @@ instrumentMainFunction l
   , not ("debugRun" `isPrefixOf` rest') = "main = Debug.debugRun $ " ++ rest'
   | otherwise = l
 
-parseModule :: String -> ([String], String, [String], [String])
-parseModule contents = (map fst top, name, modules, body)
+parseModule :: String -> ([String], String, [String], [String], Int)
+parseModule contents = (map fst top, name, modules, body, bodyStartLine + length modules0)
   where
     contents' = annotateBlockComments (lines contents)
     moduleLine =
@@ -118,13 +122,14 @@ parseModule contents = (map fst top, name, modules, body)
       case takeWhile (\(_,(l, insideComment)) -> not insideComment && isPragmaLine l) (zip [(0::Int)..] contents') of
         [] -> Nothing
         xx -> Just $ fst $ last xx
-    (top, rest)
-      | Just l <- firstImportLine = splitAt (l-1) contents'
+    (top, rest) = splitAt bodyStartLine contents'
+    bodyStartLine
+      | Just l <- firstImportLine = l-1
       | Just m <- moduleLine
       , Just lastModuleLine <- findIndex ((\(l, insideComment) -> not insideComment && "where" `isSuffixOf` l)) (drop m contents')
-      = splitAt (m + lastModuleLine + 1) contents'
-      | Just p <- lastPragmaLine  = splitAt (p+1) contents'
-      | otherwise = ([], contents')
+      = m + lastModuleLine + 1
+      | Just p <- lastPragmaLine  = p+1
+      | otherwise = 0
     (reverse -> body0, reverse -> modules0) =
       break (\(l,insideComment) -> not insideComment && isImportLine l) (reverse rest)
     name
