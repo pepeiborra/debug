@@ -61,6 +61,9 @@ main = do
 #else
     Just refTrace <- decode <$> B.readFile "test/ref/hoed80.json"
 #endif
+    let errors = sanityCheck trace
+    unless (null errors) $
+      error $ unlines $ "Trace fails the sanity check with errors: " : map ("  "++) errors
     unless (equivalentTrace trace refTrace) $
       error "Trace does not match the reference value"
     print (foo ['c'])
