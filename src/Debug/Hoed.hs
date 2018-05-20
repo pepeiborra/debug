@@ -437,12 +437,26 @@ applyRenamingToTyBndr vv (PlainTV n)    = PlainTV <$> Map.lookup n vv
 applyRenamingToTyBndr vv (KindedTV n k) = (`KindedTV` k) <$> Map.lookup n vv
 
 adjustValD :: Dec -> Dec
-adjustValD decl@ValD{} = transformBi adjustPat decl
+adjustValD (ValD pat body decs) = ValD (transform adjustPat pat) (adjustBody body) decs
 adjustValD other       = other
 
 adjustPat :: Pat -> Pat
 adjustPat (VarP x) = ViewP (VarE 'observe `AppE` (VarE 'pack `AppE` toLit x)) (VarP x)
 adjustPat x        = x
+
+adjustBody :: Body -> Body
+adjustBody (GuardedB exps) = GuardedB $ map (first adjustGuard) exps
+adjustBody other = other
+
+adjustGuard :: Guard -> Guard
+adjustGuard (PatG stmts) = PatG $ map adjustStmt stmts
+adjustGuard other = other
+
+adjustStmt :: Stmt -> Stmt
+adjustStmt (BindS pat exp) = BindS (transform adjustPat pat) exp
+adjustStmt (LetS decs) = LetS $ map adjustValD decs
+adjustStmt (ParS stmts) = ParS $ map (map adjustStmt) stmts
+adjustStmt other = other
 
 toLit :: Name -> TH.Exp
 toLit (Name (OccName x) _) = LitE $ StringL x
