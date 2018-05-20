@@ -10,5 +10,5 @@ main :: IO ()
 main = do
     hSetBuffering stdout NoBuffering
     Variables.main
-    PP.main
     Hoed.main
+    -- PP.main  -- Too slow
