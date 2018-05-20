@@ -72,8 +72,10 @@ library
 executable debug-pp
   main-is: DebugPP.hs
   ghc-options:         -main-is DebugPP
+  other-modules:       
+      Instrument
   hs-source-dirs:
-      src
+      app
   build-depends:
       aeson
     , base >=4.7 && <5
@@ -86,11 +88,13 @@ test-suite debug-test
     default-language: Haskell2010
     type: exitcode-stdio-1.0
     main-is: Main.hs
-    hs-source-dirs: test
+    hs-source-dirs: app, test
     other-modules:
         Variables
         Util
         Hoed
+        Instrument
+        PP
     build-depends:
         base == 4.*,
         directory,

@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -5,6 +6,7 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-} -- Dodgy Show instance, useful for debugging
 {-# OPTIONS_GHC -Wno-deprecations #-} -- Dodgy Show instance, useful for debugging
+{-# OPTIONS_GHC -O2 #-}
 
 -- | Module for recording and manipulating debug traces. For most users, the
 --   @TemplateHaskell@ helpers in "Debug" should be sufficient.
@@ -25,7 +27,6 @@ import Control.DeepSeq
 import Control.Exception
 import Control.Monad
 import Data.Aeson
-import Data.Aeson.Text
 import Data.Aeson.Types
 import Data.Char
 import Data.Hashable
@@ -35,11 +36,10 @@ import Data.Monoid
 import Data.Text (Text)
 import Data.Text.Read as T
 import Data.Tuple.Extra
+import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
-import qualified Data.Text.Lazy as TL
-import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Vector as V
 import GHC.Generics
 import System.IO
@@ -114,23 +114,29 @@ debugPrintTrace trace@DebugTrace{..} = do
           getArgIndex _ = Nothing
 
 -- | Save information about observed functions to the specified file, in HTML format.
+{-# INLINE debugSaveTrace #-}
 debugSaveTrace :: FilePath -> DebugTrace -> IO ()
 debugSaveTrace file db = do
-    html  <- TL.readFile =<< getDataFileName "html/debug.html"
-    debug <- TL.readFile =<< getDataFileName "html/debug.js"
-    css   <- TL.readFile =<< getDataFileName "html/debug.css"
-    let trace = encodeToLazyText db
+    html  <- BS.readFile =<< getDataFileName "html/debug.html"
+    debug <- B.readFile =<< getDataFileName "html/debug.js"
+    css   <- B.readFile =<< getDataFileName "html/debug.css"
+    let trace = encode db
     let script a = "<script>\n" <> a <> "\n</script>"
     let style a = "<style>\n" <> a <> "\n</style>"
-    let f x | "trace.js" `TL.isInfixOf` x = script ("var trace =\n" <> trace <> ";")
-            | "debug.js" `TL.isInfixOf` x = script debug
-            | "debug.css" `TL.isInfixOf` x = style css
-            | otherwise = x
-    TL.writeFile file $ TL.unlines $ map f $ TL.lines html
+    let findSubstring x = not . BS.null . snd . BS.breakSubstring x
+        isTrace = findSubstring "trace.js"
+        isJs    = findSubstring "debug.js"
+        isCss   = findSubstring "debug.css"
+    let f x | isTrace x = script ("var trace =\n" <> trace <> ";")
+            | isJs    x = script debug
+            | isCss   x = style css
+            | otherwise = B.fromStrict x
+    B.writeFile file $ B.unlines $ map f $ BS.lines html
 
 -- | Open a web browser showing information about observed functions.
+{-# INLINE debugViewTrace #-}
 debugViewTrace :: DebugTrace -> IO ()
-debugViewTrace db = do
+debugViewTrace !db = do
     tdir <- getTemporaryDirectory
     file <- bracket
         (openTempFile tdir "debug.html")
@@ -163,7 +169,13 @@ data DebugTrace = DebugTrace
 
 instance FromJSON DebugTrace
 instance ToJSON DebugTrace where
-  toEncoding = genericToEncoding defaultOptions
+  toJSON = genericToJSON defaultOptions
+  toEncoding DebugTrace{..} = -- genericToEncoding defaultOptions
+    pairs(
+      "functions" .= functions <>
+      "variables" .= variables <>
+      "calls"     .= calls)
+
 instance NFData DebugTrace
 
 -- | A flat encoding of an observed call.
