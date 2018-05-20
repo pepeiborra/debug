@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -12,10 +14,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PackageImports    #-}
 {-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE RecursiveDo       #-}
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TupleSections     #-}
 {-# LANGUAGE TypeOperators     #-}
 {-# LANGUAGE ViewPatterns      #-}
+{-# OPTIONS -Wall -Wno-name-shadowing #-}
 
 -- | An alternative backend for lazy debugging with call stacks built on top of the "Hoed" package.
 --
@@ -75,15 +79,14 @@ module Debug.Hoed
   , defaultHoedOptions
   ) where
 
+import           Control.DeepSeq
 import           Control.Monad
 import           Control.Monad.Intern
 import           Data.Bifunctor
-import           Data.Bitraversable
 import           Data.Char
 import           Data.Generics.Uniplate.Data
 import           Data.Graph.Libgraph
 import           Data.Hashable
-import           Data.HashMap.Strict         (HashMap)
 import qualified Data.HashMap.Strict         as HMS
 import qualified Data.IntMap.Strict          as IntMap
 import qualified Data.IntSet                 as IntSet
@@ -91,10 +94,11 @@ import qualified Data.Map.Strict             as Map
 import qualified Data.HashSet                as Set
 import           Data.List
 import           Data.Maybe
-import           Data.Monoid
+import           Data.Semigroup
 import           Data.Text                   (Text, pack)
 import qualified Data.Text                   as T
 import qualified Data.Text.Lazy              as LT
+import qualified Data.Array                  as A
 import "Hoed"    Debug.Hoed
 import           Debug.Hoed.Render           as Hoed -- (Exp, ExpF, pattern ExpFun, pattern ExpCon)
 import           Debug.Util
@@ -107,10 +111,9 @@ import           Debug.DebugTrace            as D (CallData (..),
                                                    debugViewTrace,
                                                    debugSaveTrace
                                                    )
-import           GHC.Exts                    (IsList (..))
+import           GHC.Exts                    (IsList (..), inline)
 import           Language.Haskell.TH
 import           Language.Haskell.TH.Syntax  as TH
-import           System.Clock
 
 {-# ANN module ("hlint: ignore Redundant bracket" :: String) #-}
 
@@ -120,65 +123,71 @@ import           System.Clock
 --       ...
 --   @
 debugRun :: IO () -> IO ()
-debugRun program = getDebugTrace defaultHoedOptions {prettyWidth = 160, verbose = Verbose} program >>= debugViewTrace
+debugRun program = inline getDebugTrace defaultHoedOptions program >>= \x -> inline debugViewTrace x
 
 -- | Runs the program collecting a debugging trace
 getDebugTrace :: HoedOptions -> IO () -> IO DebugTrace
+{-# INLINE getDebugTrace #-}
 getDebugTrace hoedOptions program = do
-  HoedAnalysis{..} <- runO' hoedOptions program
+  HoedAnalysis{..} <- runO' hoedOptions{verbose=Verbose} program
   putStrLn "Please wait while the debug trace is constructed..."
-  t <- getTime Monotonic
-  let result = convert hoedCompTree hoedExps
-      !lv    = length(variables result)
-  t' <- getTime Monotonic
-  let compTime :: Double = fromIntegral(toNanoSecs(diffTimeSpec t t')) * 1e-9
-  putStrLn $ show (length $ functions result) ++ " functions"
-  putStrLn $ show lv ++ " variables"
-  putStrLn $ show (length $ D.calls result) ++ " calls"
-  putStrLn $ "=== Debug Trace (" ++ show compTime ++ " seconds) ==="
-  return result
+  convert hoedCompTree hoedExps
 
-data HoedFunctionKey = HoedFunctionKey
-  { label   :: !(Hashed Text)
-  , arity   :: !Int
-  , clauses :: ![Hashed Text]
-  }
-  deriving (Eq)
-
-instance Hashable HoedFunctionKey where
-  hashWithSalt s HoedFunctionKey{..} =
-    s `hashWithSalt` label
-      `hashWithSalt` arity
-      `hashWithSalt` clauses
-
+type HoedFunctionKey = Int
 type HoedCallKey = Int
+type Id = Int
+
+data HoedFunctionDetails = HoedFunctionDetails
+  { label   :: Text
+  , hoedFunctionKey :: !HoedFunctionKey
+  , arity   :: !Int
+  , clauses :: [Text]
+  }
+  deriving Generic
+
+instance NFData HoedFunctionDetails
+
+instance Eq HoedFunctionDetails where
+  a == b = hoedFunctionKey a == hoedFunctionKey b && arity a == arity b
+
+instance Hashable HoedFunctionDetails where
+  hashWithSalt s h = hashWithSalt s (hoedFunctionKey h)
 
 data HoedCallDetails = HoedCallDetails
   { argValuesIdx
-  , clauseValuesIdx :: [Id]
-  , resultIdx :: Id
-  , depends, parents :: ![HoedCallKey]
+  , clauseValuesIdx :: [Key]
+  , resultIdx :: Key
+  , depends, parents :: [HoedCallKey]
   } deriving (Eq, Generic)
 
+instance NFData HoedCallDetails
 
 ---------------------------------------------------------------------------
 -- Cached pred and succ relationships
 
 data AnnotatedCompTree exp = AnnotatedCompTree
   { compTree          :: CompTreeOf exp
-  , predsMap, succsMap:: HMS.HashMap (VertexOf exp) [VertexOf exp]
+  , getPreds, getSuccs:: VertexOf exp -> [VertexOf exp]
   }
+  deriving Generic
 
-getPreds :: (Eq exp, Hashable exp) => AnnotatedCompTree exp -> VertexOf exp -> [VertexOf exp]
-getPreds act v = fromMaybe [] $ HMS.lookup v (predsMap act)
+instance NFData e => NFData (AnnotatedCompTree e)
 
-getSuccs :: (Eq exp, Hashable exp) => AnnotatedCompTree exp -> VertexOf exp -> [VertexOf exp]
-getSuccs act v =  fromMaybe [] $ HMS.lookup v (succsMap act)
+data AnnotatedNode a = AnnotatedNode { annotatedNodePreds, annotatedNodeSuccs :: ![a] }
 
-annotateCompTree :: (Eq exp, Hashable exp) => CompTreeOf exp -> AnnotatedCompTree exp
+instance Semigroup (AnnotatedNode a) where
+  {-# INLINE (<>) #-}
+  x <> y = AnnotatedNode (annotatedNodePreds x <> annotatedNodePreds y) (annotatedNodeSuccs x <> annotatedNodeSuccs y)
+
+instance Monoid (AnnotatedNode a) where
+  mempty = AnnotatedNode [] []
+  mappend = (<>)
+
+annotateCompTree :: (exp ~ Interned ExpF) => CompTreeOf exp -> AnnotatedCompTree exp
 annotateCompTree compTree = AnnotatedCompTree{..}  where
-  predsMap  = HMS.fromListWith (++) [ (t, [s]) | Arc s t _ <- arcs compTree]
-  succsMap  = HMS.fromListWith (++) [ (s, [t]) | Arc s t _ <- arcs compTree]
+  getPreds  = annotatedNodePreds . flip (HMS.lookupDefault mempty) relMap
+  getSuccs  = annotatedNodeSuccs . flip (HMS.lookupDefault mempty) relMap
+  relMap    = HMS.fromListWith (<>) $ concat [ [ (s, AnnotatedNode [] [t]), (t, AnnotatedNode [s] []) ] | Arc s t _ <- arcs compTree]
 
 ---------------------------------------------------------------------------
 hoedCallValues :: HoedCallDetails -> [Id]
@@ -194,93 +203,110 @@ getRelatives view rel v =
         , callKey <- getRelatives view rel v'
       ]
 
+{-# INLINE extractHoedCall #-}
 extractHoedCall
-  :: AnnotatedCompTree (Interned ExpF, Id)
-  -> VertexOf (Interned ExpF, Id)
-  -> Maybe (Hashed HoedFunctionKey, HoedCallKey, HoedCallDetails)
-extractHoedCall hoedCompTree v@Vertex {vertexStmt = c@CompStmt {stmtExp = fst -> ExpFun_{calls_ = [(args,res)]}, ..}} =
+  :: AnnotatedCompTree (Interned ExpF)
+  -> VertexOf (Interned ExpF)
+  -> Maybe (HoedFunctionDetails, HoedCallKey, HoedCallDetails)
+extractHoedCall hoedCompTree v@Vertex {vertexStmt = CompStmt {stmtExp = internedShape -> ExpFun_{calls_ = [(args,res)]}, ..}} =
   Just
-    ( hashed $ HoedFunctionKey (hashed stmtLabel) (length args) (map fst clauses)
+    ( HoedFunctionDetails stmtLabel stmtObservation (length args) (map fst clauses)
     , stmtIdentifier
     , HoedCallDetails args (map snd clauses) res depends parents)
   where
     clauses =
-      [ (hashed stmtLabel, id)
-      | Vertex {vertexStmt = CompStmt {stmtLabel, stmtExp = (ExpCon_{}, id)}} <-
+      [ (stmtLabel, id)
+      | Vertex {vertexStmt = CompStmt {stmtLabel, stmtExp = Interned id ExpCon_{}}} <-
           getSuccs hoedCompTree v
       ]
-    depends = snub $ getRelatives fst (getSuccs hoedCompTree) v
-    parents = snub $ getRelatives fst (getPreds hoedCompTree) v
+    depends = snub $ getRelatives internedShape (getSuccs hoedCompTree) v
+    parents = snub $ getRelatives internedShape (getPreds hoedCompTree) v
 
 extractHoedCall _ _ = Nothing
 
+data ConvertState = ConvertState
+  { seenFunctions :: !(Set.HashSet HoedFunctionDetails)
+    -- ^ Set of seen functions
+  , seenExps      :: !IntSet.IntSet
+    -- ^ Set of seen Exp keys
+  , seenCalls     :: !(IntMap.IntMap Int)
+    -- ^ Mapping from Hoed CompStmt uniques to debug call indexes
+  }
+  deriving Generic
+
+instance NFData ConvertState
+
+instance Monoid ConvertState where
+  mempty = ConvertState mempty mempty mempty
+  mappend = (<>)
+
+instance Semigroup ConvertState where
+  {-# INLINE (<>) #-}
+  ConvertState a b c <> ConvertState a' b' c' = ConvertState (a<>a') (b<>b') (c<>c')
+
+
 -- | Convert a 'Hoed' trace to a 'debug' trace
-convert :: InternedCompTree -> InternMaps ExpF -> DebugTrace
-convert hoedCompTree hoedInternMaps = DebugTrace {..}
-  where
-    -- Ensure top level Exps are present in the intern map
-    (hoedCompTree', hoedInternMaps') =
-      runInternST (bitraverse ((traverse.traverse) (\exp ->(exp,) <$> internShallow exp)) pure hoedCompTree) hoedInternMaps
+{-# INLINE convert #-}
+convert :: InternedCompTree -> InternMaps ExpF -> IO DebugTrace
+convert hoedCompTree hoedInternMaps = do
+  aTree <- profiled "aTree" $ annotateCompTree hoedCompTree
 
-    -- Query for all function calls and associated details
-    hoedFunctionCalls :: HashMap (Hashed HoedFunctionKey) [(HoedCallKey, HoedCallDetails)]
-    hoedFunctionCalls =
-      HMS.fromListWith (<>)
-        [ (fnKey, [(callKey, callDetails)])
-        | Just (fnKey, callKey, callDetails) <-
-            map (extractHoedCall (annotateCompTree hoedCompTree')) (vertices hoedCompTree')
-        ]
+      -- We perform two passes to enable fusion on the second pass.
+      -- The one pass solution relies on laziness to delay the computation of the indexes which hurts performance
 
-    sortedFunctionCalls =
-      sortOn (\(unhashed -> x, _) -> (label x, arity x)) $ toList hoedFunctionCalls
+      -- 1st pass to collect "seen" exps, calls and functions
+  let {-# INLINE loop1 #-}
+      loop1 ConvertState{..} n (fnKey, callId, hoedCallDetails) = {-# SCC "loop" #-}
+            ConvertState{ seenFunctions = Set.insert fnKey seenFunctions
+                        , seenCalls = IntMap.insert callId n seenCalls
+                        , seenExps  = IntSet.fromList (hoedCallValues hoedCallDetails) `IntSet.union` seenExps
+                        }
+  ConvertState functionSet usedExps callsMapping <- profiled "convert pass 1" $
+          foldl' (\st (n,x) -> loop1 st n x) mempty (zip [0..] $ catMaybes $ extractHoedCall aTree <$> vertices hoedCompTree)
 
-    -- Hoed indexes of all top level expressions
-    variableIndexes = foldMap (foldMap (IntSet.fromList . hoedCallValues . snd)) hoedFunctionCalls
+      -- Mapping to Debug function indexes
+  let lookupFunctionIndex = flip (HMS.lookupDefault (error "bug in convert: lookupFunctionIndex")) (HMS.fromList (zip (toList functionSet) [0 ..]))
 
-    -- Mapping from Hoed exp indexes to Debug variable indexes
-    reindex = flip (IntMap.findWithDefault (error "reindex")) (IntMap.fromList $ zip (IntSet.toList variableIndexes) [0..])
+      lookupCallIndex = flip (IntMap.findWithDefault (error "bug in convert: lookupCallIndex")) callsMapping
+      -- Mapping from Hoed exp indexes to Text
+      lookupRenderedExp =
+        let renderedMap = fmap (renderExp . fmap (flip (IntMap.findWithDefault "??") renderedMap)) infMap
+            infMap = fmap nubLambdaCalls $ inflateMap hoedInternMaps
+            nubLambdaCalls it@ExpFun_{..} = it{calls_ = snub calls_}
+            nubLambdaCalls x = x
+        in flip (IntMap.findWithDefault (error "bug in Hoed: incomplete hoedExps")) (fmap LT.toStrict renderedMap)
 
-    -- Debug variables
-    variables :: [Text]
-    variables = lookupRenderedExp <$> IntSet.toList variableIndexes
+      lookupArgName = (A.listArray (0,100) ["$arg" <> pack (show i) | i <- [(0::Int)..50]] A.!)
+      -- Mapping from Hoed exp indexes to Debug variable indexes
+      lookupExpIndex = flip (IntMap.findWithDefault (error "lookupExpIndex")) (IntMap.fromList $ zip (toList usedExps) [(0::Int)..])
 
-    -- Mapping from Hoed exp indexes to Text
-    lookupRenderedExp =
-      let renderedMap = fmap (renderExp . fmap (flip (IntMap.findWithDefault "??") renderedMap)) (inflateMap hoedInternMaps')
-      in flip (IntMap.findWithDefault (error "bug in Hoed: incomplete hoedExps")) (fmap LT.toStrict renderedMap)
-    -- lookupRenderedExp x = hashed $ pack $ show @Hoed.Exp $ evalIntern (inflate x) hoedInternMaps'
+      {-# INLINE loop #-}
+      loop (fnKey, _, HoedCallDetails{..}) =
+            let callExps = {-# SCC "callExps" #-}
+                      ("$result", resultIdx) :
+                      zipWith (\i v -> (lookupArgName i, v)) [(1::Int) ..] argValuesIdx ++
+                      zip (clauses fnKey) clauseValuesIdx
+                callFunctionId = {-# SCC "callFunctionId" #-} lookupFunctionIndex fnKey
+                callDepends = {-# SCC "callDepends" #-} map lookupCallIndex depends
+                callParents = {-# SCC "callParents" #-} map lookupCallIndex parents
+                callVals    = {-# SCC "callVals" #-} map (second lookupExpIndex) callExps
+            in CallData{..}
 
-    -- Mapping to Debug function indexes
-    lookupFunctionIndex = flip (HMS.lookupDefault (error "bug in convert: lookupFunctionIndex")) (HMS.fromList (zip (map fst sortedFunctionCalls) [0 ..]))
-    -- Mapping from Hoed Comp uniques to debug call indexes
-    lookupCallIndex     = flip (IntMap.findWithDefault (error "bug in convert: lookupCallIndex")) (IntMap.fromList (zip (map fst callsTable) [0 ..]))
+      -- 2nd pass to build the list of call datas
+  calls <- profiled "convert pass 2" $ map loop $ mapMaybe (extractHoedCall aTree) (vertices hoedCompTree)
 
-    (functions, concat -> callsTable) =
-      unzip
-      [ (Function{..}
-        ,[( callId, CallData {..})
-         | (callId, HoedCallDetails {..}) <- toList calls
-         , let callVals =
-                 map (second reindex) $
-                 ("$result", resultIdx) :
-                 zipWith (\i v -> ("$arg" <> pack (show i), v)) [(1::Int) ..] argValuesIdx ++
-                 zip (map unhashed clauses) clauseValuesIdx
-         , let callDepends = map lookupCallIndex depends
-         , let callParents = map lookupCallIndex parents
-         ])
-      | (k@(unhashed -> HoedFunctionKey {..}), calls) <- sortedFunctionCalls
-      , let callFunctionId = lookupFunctionIndex k
-      , let funResult = "$result"
-      , let funArguments = map (\i -> "$arg" <> pack(show i)) [1 .. arity] ++ map unhashed clauses
-      -- HACK Expects a multiline label with the function name in the first line, and the code afterwards
-      , let (funName,funSource) = T.break (=='\n') (unhashed label)
-      ]
+  functions <- profiled "functions" [ Function{..}
+                  | k <- toList functionSet
+                  , let HoedFunctionDetails{..} = k
+                        funArguments = map lookupArgName [1 .. arity] ++ clauses
+                        funResult    = "$result"
+                        -- HACK Expects a multiline label with the function name in the first line, and the code afterwards
+                        (funName,funSource) = T.break (=='\n') (label)
+                  ]
+      -- Debug variables
+  variables <- profiled "variables" $ lookupRenderedExp <$> toList usedExps
 
-    calls = map snd callsTable
-
-
-snub :: Ord a => [a] -> [a]
-snub = map head . group . sort
+  return DebugTrace {..}
 
 ----------------------------------------------------------------------------
 -- Template Haskell
@@ -466,3 +492,24 @@ toLit (Name (OccName x) _) = LitE $ StringL x
 
 newtype Verbatim = Verbatim String
 instance Show Verbatim where showsPrec p (Verbatim s) = showParen (p>0) $ showString s
+
+snub :: (Eq a, Ord a) => [a] -> [a]
+snub = map head . group . sort
+
+profiled :: NFData a => String -> a -> IO a
+profiled _ = return
+
+{-
+profiled msg a = do
+  (t, res) <- timed (evaluate $ force a)
+  printf "%s: %.2f seconds\n" msg t
+  return res
+timed :: IO b -> IO (Double, b)
+timed act = do
+  t0 <- getTime Monotonic
+  res <- act
+  t1 <- getTime Monotonic
+  return (duration t0 t1, res)
+duration :: TimeSpec -> TimeSpec -> Double
+duration t t' = fromIntegral(toNanoSecs(diffTimeSpec t t')) * 1e-9 :: Double
+--}
