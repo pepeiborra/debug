@@ -406,8 +406,13 @@ debug' Config{..} q = do
           | Just n' <- lookup n names
           , not (hasRankNTypes ty) -> do
             let ty' = adjustTy ty
+#if __GLASGOW_HASKELL__ < 804
             ty'' <- renameForallTyVars ty'
+#else
+            let ty'' = ty'
+#endif
             return [SigD n ty', SigD n' ty'']
+          | otherwise -> return [SigD n (adjustTy ty)]
 #if __GLASGOW_HASKELL__ >= 802
         DataD cxt1 name tt k cons derivs
           | not $ Set.member (prettyPrint name) excludedSet
