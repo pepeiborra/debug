@@ -61,7 +61,7 @@ instrument :: String -> Config -> String -> String
 instrument filename Config {..} contents
   | name `elem` excluded =
     printf "{-# LINE 0 %s #-}\n" (show filename) ++ contents
-  | otherwise = unlines [top', modules', body'']
+  | otherwise = unlines [top', modules', body''', annotations']
   where
     (top, name, modules, body, bodyStartLine) = parseModule contents
     debugModule = "Debug" ++ if useHoedBackend then ".Hoed" else ""
@@ -83,12 +83,13 @@ instrument filename Config {..} contents
       ["{-# LANGUAGE DerivingStrategies #-}"   | useHoedBackend && (generateObservableInstances || generateGenericInstances)] ++
       ["{-# LANGUAGE DeriveGeneric #-}"        | useHoedBackend && generateGenericInstances] ++
       top
-    body' =
+    (annotations, body') = partition (\l -> "{-# ANN" `isPrefixOf` l) body
+    body'' =
       map
         (if instrumentMain
            then instrumentMainFunction
            else id)
-        body
+        body'
     debugWrapper
       | useHoedBackend && (generateGenericInstances || generateObservableInstances) =
         printf
@@ -98,10 +99,12 @@ instrument filename Config {..} contents
           (show excludedFromInstanceGeneration)
       | otherwise =
         "Debug.debug"
-    body'' = unlines $
+    body''' = unlines $
       printf "{-# LINE %d %s #-}" bodyStartLine (show filename) :
       (debugWrapper ++ " [d|") :
-      map indent (body' ++ ["  |]"])
+      map indent (body'' ++ ["  |]"])
+    -- Annotations contain names and because of this, they need to go in a follow-up TH splice
+    annotations' = unlines $ "id [d| " : map indent annotations ++ ["  |]"]
 
 instrumentMainFunction :: String -> String
 instrumentMainFunction l
