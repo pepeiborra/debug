@@ -436,7 +436,12 @@ adjustInnerSigD other       = other
 
 -- Add a wildcard for Observable a
 adjustTy :: Type -> Type
-adjustTy (ForallT vars ctxt typ) =
+adjustTy ty@(ForallT vars ctxt typ)
+  | not $ null [ () | AppT (ConT n) _ <- ctxt, n == ''Observable]
+  = ty -- Avoid inserting wildcards on types that already have Observable constraints
+       -- partial type signatures do not support polymorphic recursion
+       -- so this is designed as a workaround
+  | otherwise =
     ForallT vars (delete WildCardT ctxt ++ [WildCardT]) typ
 adjustTy other = adjustTy $ ForallT [] [] other
 
