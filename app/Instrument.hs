@@ -24,6 +24,7 @@ data Config = Config_
   , _excludedFromInstanceGeneration      :: Maybe [String]
   , _verbose                             :: Maybe Bool
   , _includeSourceCode                   :: Maybe Bool
+  , _dumpInstrumentedCode                :: Maybe Bool
   } deriving (Generic, Show)
 
 configJsonOptions :: Options
@@ -43,6 +44,7 @@ pattern Config { excluded
               , excludedFromInstanceGeneration
               , verbose
               , includeSourceCode
+              , dumpInstrumentedCode
               } <-
   Config_
   { _excluded = (fromMaybe [] -> excluded)
@@ -55,11 +57,12 @@ pattern Config { excluded
   , _excludedFromInstanceGeneration = (fromMaybe [] -> excludedFromInstanceGeneration)
   , _verbose = (fromMaybe False -> verbose)
   , _includeSourceCode = (fromMaybe True -> includeSourceCode)
+  , _dumpInstrumentedCode = (fromMaybe False -> dumpInstrumentedCode)
   }
-  where Config a b c d e f g h i j = Config_ (Just a) (Just b) (Just c) (Just d) (Just e) (Just f) (Just g) (Just h) (Just i) (Just j)
+  where Config a b c d e f g h i j k = Config_ (Just a) (Just b) (Just c) (Just d) (Just e) (Just f) (Just g) (Just h) (Just i) (Just j) (Just k)
 
 defaultConfig :: Config
-defaultConfig = Config_ Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+defaultConfig = Config_ Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
 instrument :: String -> Config -> String -> String
 instrument filename Config {..} contents
@@ -97,11 +100,12 @@ instrument filename Config {..} contents
     debugWrapper
       | useHoedBackend && (generateGenericInstances || generateObservableInstances || not includeSourceCode) =
         printf
-          "Debug.debug' Debug.Config{Debug.generateGenericInstances=%s,Debug.generateObservableInstances=%s, Debug.excludeFromInstanceGeneration=%s, Debug.includeSourceCode=%s}"
+          "Debug.debug' Debug.Config{Debug.generateGenericInstances=%s,Debug.generateObservableInstances=%s, Debug.excludeFromInstanceGeneration=%s, Debug.includeSourceCode=%s, Debug.dumpInstrumentedCode=%s}"
           (show generateGenericInstances)
           (show generateObservableInstances)
           (show excludedFromInstanceGeneration)
           (show includeSourceCode)
+          (show dumpInstrumentedCode)
       | otherwise =
         "Debug.debug"
     body''' = unlines $

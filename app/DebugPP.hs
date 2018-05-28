@@ -80,6 +80,9 @@ defConfig = unlines
   , "# If false, do not embed the source code in the trace."
   , "includeSourceCode: true"
   , ""
+  , "# If true, tell Debug.Hoed to dump the instrumented source code to *.hs.debug"
+  , "dumpInstrumentedCode: false"
+  , ""
   ]
 
 main :: IO ()

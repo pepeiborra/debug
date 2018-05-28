@@ -337,18 +337,20 @@ data Config = Config
   , generateObservableInstances   :: Bool      -- ^ Insert @deriving anyclass Observable@ on type declarations that don't already derive 'Observable'. Requires @DeriveAnyClass@ and @DerivingStrategies@.
   , excludeFromInstanceGeneration :: [String]  -- ^ Exclude types from instance generation by name (unqualified).
   , includeSourceCode             :: Bool      -- ^ Embed the source code in observation labels
+  , dumpInstrumentedCode          :: Bool      -- ^ Dump to files *.hs.debug
   }
 
-defaultConfig = Config False False [] True
+defaultConfig :: Config
+defaultConfig = Config False False [] True False
 
 -- | A @TemplateHaskell@ wrapper to convert normal functions into traced functions.
 debug :: Q [Dec] -> Q [Dec]
-debug = debug' (Config False False [] True)
+debug = debug' defaultConfig
 
 -- | A @TemplateHaskell@ wrapper to convert normal functions into traced functions
 --   and optionally insert 'Observable' and 'Generic' instances.
 debug' :: Config -> Q [Dec] -> Q [Dec]
-debug' Config{..} q = do
+debug' config@Config{..} q = do
   missing <-
     filterM
       (fmap not . isExtEnabled)
@@ -377,7 +379,6 @@ debug' Config{..} q = do
                | x == y -> Just s
              _ -> Nothing)
           decs
-  let checkSig = maybe True (not . hasRankNTypes) . askSig
   let sourceNames =
         mapMaybe
           (\case
@@ -387,69 +388,81 @@ debug' Config{..} q = do
           decs
   names <-
     sequence [(n, ) <$> newName (mkDebugName (nameBase n)) | n <- sourceNames]
-  let  -- HACK We embed the source code of the function in the label,
-       --      which is then unpacked by 'convert'
-      createLabel n dec
-        | includeSourceCode = nameBase n ++ "\n" ++ prettyPrint dec
-        | otherwise = nameBase n
 
-#if __GLASGOW_HASKELL__ >= 802
-      excludedSet = Set.fromList excludeFromInstanceGeneration
-      updateDerivs derivs
-        | hasGenericInstance <- not $ null $ filterDerivingClausesByName ''Generic derivs
-        = [ DerivClause (Just StockStrategy)    [ConT ''Generic]
-          | not hasGenericInstance
-          , generateGenericInstances
-          ] ++
-          [ DerivClause (Just AnyclassStrategy) [ConT ''Observable]
-          | [] == filterDerivingClausesByName ''Observable derivs
-          , hasGenericInstance || generateGenericInstances
-          , generateObservableInstances
-          ] ++
-          derivs
-      filterDerivingClausesByName n' derivs =
-        [ it | it@(DerivClause _ preds) <- derivs , ConT n <- preds , n == n']
-#endif
-  fmap concat $
-    forM decs $ \dec ->
-      case dec of
-        ValD (VarP n) b clauses
-          | checkSig n -> do
-            let Just n' = lookup n names
-                label = createLabel n dec
-            newDecl <-
-              funD n [clause [] (normalB [|observe (pack label) $(varE n')|]) []]
-            let clauses' = transformBi adjustValD clauses
-            return [newDecl, ValD (VarP n') b clauses']
-        FunD n clauses
-          | checkSig n -> do
-            let Just n' = lookup n names
-                label = createLabel n dec
-            newDecl <-
-              funD n [clause [] (normalB [|observe (pack label) $(varE n')|]) []]
-            let clauses' = transformBi (adjustInnerSigD . adjustValD) clauses
-            return [newDecl, FunD n' clauses']
-        SigD n ty
-          | Just n' <- lookup n names
-          , not (hasRankNTypes ty) -> do
-            let ty' = adjustTy ty
+  decs' <- fmap concat $ mapM (adjustDec askSig config names) decs
+
+  when dumpInstrumentedCode $ do
+    loc <- location
+    runIO $ do
+      let path = loc_filename loc ++ ".debug"
+      writeFile path (unlines $ intersperse [] $ map prettyPrint decs')
+
+  return decs'
+
+adjustDec :: (Name -> Maybe Type) -> Config -> [(Name, Name)] -> Dec -> Q [Dec]
+adjustDec askSig Config{..} names = go where
+  go dec = case dec of
+          ValD (VarP n) b clauses
+            | checkSig n -> do
+              let Just n' = lookup n names
+                  label = createLabel n dec
+              newDecl <-
+                funD n [clause [] (normalB [|observe (pack label) $(varE n')|]) []]
+              let clauses' = transformBi adjustValD clauses
+              return [newDecl, ValD (VarP n') b clauses']
+          FunD n clauses
+            | checkSig n -> do
+              let Just n' = lookup n names
+                  label = createLabel n dec
+              newDecl <-
+                funD n [clause [] (normalB [|observe (pack label) $(varE n')|]) []]
+              let clauses' = transformBi (adjustInnerSigD . adjustValD) clauses
+              return [newDecl, FunD n' clauses']
+          SigD n ty
+            | Just n' <- lookup n names
+            , not (hasRankNTypes ty) -> do
+              let ty' = adjustTy ty
 #if __GLASGOW_HASKELL__ < 804
-            ty'' <- renameForallTyVars ty'
+              ty'' <- renameForallTyVars ty'
 #else
-            let ty'' = ty'
+              let ty'' = ty'
 #endif
-            return [SigD n ty', SigD n' ty'']
-          | otherwise -> return [SigD n (adjustTy ty)]
+              return [SigD n ty', SigD n' ty'']
+            | otherwise -> return [SigD n (adjustTy ty)]
 #if __GLASGOW_HASKELL__ >= 802
-        DataD cxt1 name tt k cons derivs
-          | not $ Set.member (prettyPrint name) excludedSet
-          -> return [DataD cxt1 name tt k cons $ updateDerivs derivs]
-        NewtypeD cxt1 name tt k cons derivs
-          | not $ Set.member (prettyPrint name) excludedSet
-          -> return [NewtypeD cxt1 name tt k cons $ updateDerivs derivs]
+          DataD cxt1 name tt k cons derivs
+            | not $ Set.member (prettyPrint name) excludedSet
+            -> return [DataD cxt1 name tt k cons $ updateDerivs derivs]
+          NewtypeD cxt1 name tt k cons derivs
+            | not $ Set.member (prettyPrint name) excludedSet
+            -> return [NewtypeD cxt1 name tt k cons $ updateDerivs derivs]
 #endif
-        _ -> return [dec]
+          _ -> return [dec]
 
+  excludedSet = Set.fromList excludeFromInstanceGeneration
+
+    -- HACK We embed the source code of the function in the label,
+    --      which is then unpacked by 'convert'
+  createLabel n dec
+    | includeSourceCode = nameBase n ++ "\n" ++ prettyPrint dec
+    | otherwise = nameBase n
+  checkSig = maybe True (not . hasRankNTypes) . askSig
+#if __GLASGOW_HASKELL__ >= 802
+  updateDerivs derivs
+    | hasGenericInstance <- not $ null $ filterDerivingClausesByName ''Generic derivs
+    = [ DerivClause (Just StockStrategy)    [ConT ''Generic]
+      | not hasGenericInstance
+      , generateGenericInstances
+      ] ++
+      [ DerivClause (Just AnyclassStrategy) [ConT ''Observable]
+      | [] == filterDerivingClausesByName ''Observable derivs
+      , hasGenericInstance || generateGenericInstances
+      , generateObservableInstances
+      ] ++
+      derivs
+  filterDerivingClausesByName n' derivs =
+    [ it | it@(DerivClause _ preds) <- derivs , ConT n <- preds , n == n']
+#endif
 
 mkDebugName :: String -> String
 mkDebugName n@(c:_)
