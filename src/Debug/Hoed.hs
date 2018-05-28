@@ -408,7 +408,7 @@ adjustDec askSig Config{..} names = go where
                   label = createLabel n dec
               newDecl <-
                 funD n [clause [] (normalB [|observe (pack label) $(varE n')|]) []]
-              let clauses' = transformBi adjustValD clauses
+              let clauses' = transformBi (adjustInnerSigD . adjustValD) clauses
               return [newDecl, ValD (VarP n') b clauses']
           FunD n clauses
             | checkSig n -> do
