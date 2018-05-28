@@ -77,6 +77,9 @@ defConfig = unlines
   , "# If true, print a line for every instrumented module."
   , "verbose: false"
   , ""
+  , "# If false, do not embed the source code in the trace."
+  , "includeSourceCode: true"
+  , ""
   ]
 
 main :: IO ()

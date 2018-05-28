@@ -300,7 +300,7 @@ convert hoedCompTree hoedInternMaps = do
                   , let HoedFunctionDetails{..} = k
                         funArguments = map lookupArgName [1 .. arity] ++ clauses
                         funResult    = "$result"
-                        -- HACK Expects a multiline label with the function name in the first line, and the code afterwards
+                        -- HACK Expects a multiline label with the function name in the first line, and the source code afterwards
                         (funName,funSource) = T.break (=='\n') (label)
                   ]
       -- Debug variables
@@ -315,11 +315,14 @@ data Config = Config
   { generateGenericInstances      :: Bool      -- ^ Insert @deriving stock Generic@ on type declarations that don't already derive 'Generic'. Requires @DeriveGeneric@ and @DerivingStrategies@.
   , generateObservableInstances   :: Bool      -- ^ Insert @deriving anyclass Observable@ on type declarations that don't already derive 'Observable'. Requires @DeriveAnyClass@ and @DerivingStrategies@.
   , excludeFromInstanceGeneration :: [String]  -- ^ Exclude types from instance generation by name (unqualified).
+  , includeSourceCode             :: Bool      -- ^ Embed the source code in observation labels
   }
+
+defaultConfig = Config False False [] True
 
 -- | A @TemplateHaskell@ wrapper to convert normal functions into traced functions.
 debug :: Q [Dec] -> Q [Dec]
-debug = debug' (Config False False [])
+debug = debug' (Config False False [] True)
 
 -- | A @TemplateHaskell@ wrapper to convert normal functions into traced functions
 --   and optionally insert 'Observable' and 'Generic' instances.
@@ -365,7 +368,9 @@ debug' Config{..} q = do
     sequence [(n, ) <$> newName (mkDebugName (nameBase n)) | n <- sourceNames]
   let  -- HACK We embed the source code of the function in the label,
        --      which is then unpacked by 'convert'
-      createLabel n dec = nameBase n ++ "\n" ++ prettyPrint dec
+      createLabel n dec
+        | includeSourceCode = nameBase n ++ "\n" ++ prettyPrint dec
+        | otherwise = nameBase n
 
 #if __GLASGOW_HASKELL__ >= 802
       excludedSet = Set.fromList excludeFromInstanceGeneration

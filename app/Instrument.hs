@@ -3,6 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns    #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-} -- GHC 8.0 doesn't know about COMPLETE pragmas
+
 module Instrument where
 
 import           Data.Aeson.Types
@@ -22,6 +23,7 @@ data Config = Config_
   , _generateGenericInstances            :: Maybe Bool
   , _excludedFromInstanceGeneration      :: Maybe [String]
   , _verbose                             :: Maybe Bool
+  , _includeSourceCode                   :: Maybe Bool
   } deriving (Generic, Show)
 
 configJsonOptions :: Options
@@ -32,15 +34,16 @@ instance ToJSON Config where toJSON = genericToJSON configJsonOptions
 
 {-# COMPLETE Config #-}
 pattern Config { excluded
-               , instrumentMain
-               , useHoedBackend
-               , disablePartialTypeSignatureWarnings
-               , enableExtendedDefaultingRules
-               , generateGenericInstances
-               , generateObservableInstances
-               , excludedFromInstanceGeneration
-               , verbose
-               } <-
+              , instrumentMain
+              , useHoedBackend
+              , disablePartialTypeSignatureWarnings
+              , enableExtendedDefaultingRules
+              , generateGenericInstances
+              , generateObservableInstances
+              , excludedFromInstanceGeneration
+              , verbose
+              , includeSourceCode
+              } <-
   Config_
   { _excluded = (fromMaybe [] -> excluded)
   , _instrumentMain = (fromMaybe True -> instrumentMain)
@@ -51,11 +54,12 @@ pattern Config { excluded
   , _generateGenericInstances = (fromMaybe False -> generateGenericInstances)
   , _excludedFromInstanceGeneration = (fromMaybe [] -> excludedFromInstanceGeneration)
   , _verbose = (fromMaybe False -> verbose)
+  , _includeSourceCode = (fromMaybe True -> includeSourceCode)
   }
-  where Config a b c d e f g h i = Config_ (Just a) (Just b) (Just c) (Just d) (Just e) (Just f) (Just g) (Just h) (Just i)
+  where Config a b c d e f g h i j = Config_ (Just a) (Just b) (Just c) (Just d) (Just e) (Just f) (Just g) (Just h) (Just i) (Just j)
 
 defaultConfig :: Config
-defaultConfig = Config_ Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+defaultConfig = Config_ Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
 instrument :: String -> Config -> String -> String
 instrument filename Config {..} contents
@@ -91,12 +95,13 @@ instrument filename Config {..} contents
           else (:[]))
         body'
     debugWrapper
-      | useHoedBackend && (generateGenericInstances || generateObservableInstances) =
+      | useHoedBackend && (generateGenericInstances || generateObservableInstances || not includeSourceCode) =
         printf
-          "Debug.debug' Debug.Config{Debug.generateGenericInstances=%s,Debug.generateObservableInstances=%s, Debug.excludeFromInstanceGeneration=%s}"
+          "Debug.debug' Debug.Config{Debug.generateGenericInstances=%s,Debug.generateObservableInstances=%s, Debug.excludeFromInstanceGeneration=%s, Debug.includeSourceCode=%s}"
           (show generateGenericInstances)
           (show generateObservableInstances)
           (show excludedFromInstanceGeneration)
+          (show includeSourceCode)
       | otherwise =
         "Debug.debug"
     body''' = unlines $
