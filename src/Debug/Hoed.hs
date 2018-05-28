@@ -194,14 +194,34 @@ annotateCompTree compTree = AnnotatedCompTree{..}  where
 hoedCallValues :: HoedCallDetails -> [Id]
 hoedCallValues HoedCallDetails{..} = resultIdx : (argValuesIdx ++ clauseValuesIdx)
 
-getRelatives :: (exp -> ExpF a) -> (VertexOf exp -> [VertexOf exp]) -> VertexOf exp -> [Int]
-getRelatives view rel v =
+getConstantDepends :: Ord exp => AnnotatedCompTree exp -> (exp -> ExpF a) -> VertexOf exp -> [VertexOf exp]
+getConstantDepends g view v =
+  snub $ concat
+      [ v' : getConstantDepends g view v'
+        | v'@Vertex{vertexStmt = CompStmt {stmtExp = view -> ExpCon_{}}} <- getSuccs g v
+        , all (\p -> p == v || v `notElem` getPreds g p) (getPreds g v')
+      ]
+
+getDepends :: Ord exp => AnnotatedCompTree exp -> (exp -> ExpF a) -> VertexOf exp -> [Int]
+getDepends g view v =
       [ stmtIdentifier
-        | Vertex{vertexStmt = CompStmt {stmtIdentifier, stmtExp = view -> ExpFun_{}}} <- rel v
+        | Vertex{vertexStmt = CompStmt {stmtIdentifier, stmtExp = view -> ExpFun_{}}} <- getSuccs g v
       ] ++
+      [ callKey | v' <- getConstantDepends g view v, callKey <- getDepends g view v' ]
+
+getParents :: AnnotatedCompTree exp -> (exp -> ExpF a) -> VertexOf exp -> [Int]
+getParents g view v
+  | null funParents = constParents
+  | otherwise = funParents
+  where
+    funParents =
+      [ stmtIdentifier
+        | Vertex{vertexStmt = CompStmt {stmtIdentifier, stmtExp = view -> ExpFun_{}}} <- getPreds g v
+      ]
+    constParents =
       [ callKey
-        | v'@Vertex{vertexStmt = CompStmt {stmtExp = view -> ExpCon_{}}} <- rel v
-        , callKey <- getRelatives view rel v'
+        | v'@Vertex{vertexStmt = CompStmt {stmtExp = view -> ExpCon_{}}} <- getPreds g v
+        , callKey <- getParents g view v'
       ]
 
 {-# INLINE extractHoedCall #-}
@@ -216,13 +236,12 @@ extractHoedCall hoedCompTree v@Vertex {vertexStmt = CompStmt {stmtExp = interned
     , HoedCallDetails args (map snd clauses) res depends parents)
   where
     clauses =
-      | Vertex {vertexStmt = CompStmt {stmtLabel, stmtExp = Interned id ExpCon_{}}} <-
-          getSuccs hoedCompTree v
       -- HACK stmtLabel is expected to be a multiline label with the function name in the first line, and the source code afterwards
       [ (head $ T.lines stmtLabel, id)
+      | Vertex {vertexStmt = CompStmt {stmtLabel, stmtExp = Interned id ExpCon_{}}} <- getConstantDepends hoedCompTree internedShape v
       ]
-    depends = snub $ getRelatives internedShape (getSuccs hoedCompTree) v
-    parents = snub $ getRelatives internedShape (getPreds hoedCompTree) v
+    depends = snub $ getDepends hoedCompTree internedShape v
+    parents = snub $ getParents hoedCompTree internedShape v
 
 extractHoedCall _ _ = Nothing
 
