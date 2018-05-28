@@ -85,10 +85,10 @@ instrument filename Config {..} contents
       top
     (annotations, body') = partition (\l -> "{-# ANN" `isPrefixOf` l) body
     body'' =
-      map
+      concatMap
         (if instrumentMain
-           then instrumentMainFunction
-           else id)
+          then instrumentMainFunction
+          else (:[]))
         body'
     debugWrapper
       | useHoedBackend && (generateGenericInstances || generateObservableInstances) =
@@ -106,12 +106,15 @@ instrument filename Config {..} contents
     -- Annotations contain names and because of this, they need to go in a follow-up TH splice
     annotations' = unlines $ "id [d| " : map indent annotations ++ ["  |]"]
 
-instrumentMainFunction :: String -> String
+instrumentMainFunction :: String -> [String]
 instrumentMainFunction l
   | ('m':'a':'i':'n':rest) <- l
   , ('=':rest') <- dropWhile isSpace rest
-  , not ("debugRun" `isPrefixOf` rest') = "main = Debug.debugRun $ " ++ rest'
-  | otherwise = l
+  , not ("debugRun" `isPrefixOf` rest') =
+    ["main = Debug.debugRun main_"
+    ,"main_ :: IO ()"
+    ,"main_ = " ++ rest']
+  | otherwise = [l]
 
 parseModule :: String -> ([String], String, [String], [String], Int)
 parseModule contents = (map fst top, name, modules, body, bodyStartLine + length modules0)
