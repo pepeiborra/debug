@@ -216,9 +216,10 @@ extractHoedCall hoedCompTree v@Vertex {vertexStmt = CompStmt {stmtExp = interned
     , HoedCallDetails args (map snd clauses) res depends parents)
   where
     clauses =
-      [ (stmtLabel, id)
       | Vertex {vertexStmt = CompStmt {stmtLabel, stmtExp = Interned id ExpCon_{}}} <-
           getSuccs hoedCompTree v
+      -- HACK stmtLabel is expected to be a multiline label with the function name in the first line, and the source code afterwards
+      [ (head $ T.lines stmtLabel, id)
       ]
     depends = snub $ getRelatives internedShape (getSuccs hoedCompTree) v
     parents = snub $ getRelatives internedShape (getPreds hoedCompTree) v
