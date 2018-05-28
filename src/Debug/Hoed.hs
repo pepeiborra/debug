@@ -63,7 +63,7 @@ module Debug.Hoed
   (
     debug
   , debug'
-  , Config(..)
+  , Config(..), defaultConfig
   , debugRun
     -- * Generate a trace
   , getDebugTrace
@@ -77,6 +77,7 @@ module Debug.Hoed
   , observe
   , HoedOptions(..)
   , defaultHoedOptions
+  , runO
   ) where
 
 import           Control.DeepSeq
