@@ -383,6 +383,7 @@ debug' Config{..} q = do
           [ DerivClause (Just AnyclassStrategy) [ConT ''Observable]
           | [] == filterDerivingClausesByName ''Observable derivs
           , hasGenericInstance || generateGenericInstances
+          , generateObservableInstances
           ] ++
           derivs
       filterDerivingClausesByName n' derivs =
