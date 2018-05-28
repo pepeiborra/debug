@@ -113,7 +113,9 @@ instrument filename Config {..} contents
       (debugWrapper ++ " [d|") :
       map indent (body'' ++ ["  |]"])
     -- Annotations contain names and because of this, they need to go in a follow-up TH splice
-    annotations' = unlines $ "id [d| " : map indent annotations ++ ["  |]"]
+    annotations'
+      | null annotations = ""
+      | otherwise = unlines $ "id [d| " : map indent annotations ++ ["  |]"]
 
 instrumentMainFunction :: String -> [String]
 instrumentMainFunction l
